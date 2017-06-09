@@ -162,7 +162,7 @@ class BlockManagerReplicationSuite extends SparkFunSuite
     val storageLevels = {
       Seq(MEMORY_ONLY, MEMORY_ONLY_SER, DISK_ONLY, MEMORY_AND_DISK, MEMORY_AND_DISK_SER).map {
         level => StorageLevel(
-          level.useDisk, level.useMemory, level.useOffHeap, level.deserialized, 3)
+          level.useDisk, level.useMemory, level.useOffHeap, level.useRedis, level.deserialized, 3)
       }
     }
     testReplication(3, storageLevels)
@@ -173,11 +173,11 @@ class BlockManagerReplicationSuite extends SparkFunSuite
     val storageLevels = Seq(
       MEMORY_ONLY,
       MEMORY_ONLY_SER_2,
-      StorageLevel(true, false, false, false, 3),
-      StorageLevel(true, true, false, true, 4),
-      StorageLevel(true, true, false, false, 5),
-      StorageLevel(true, true, false, true, 4),
-      StorageLevel(true, false, false, false, 3),
+      StorageLevel(true, false, false, false, false, 3),
+      StorageLevel(true, true, false, false, true, 4),
+      StorageLevel(true, true, false, false, false, 5),
+      StorageLevel(true, true, false, false, true, 4),
+      StorageLevel(true, false, false, false, false, 3),
       MEMORY_ONLY_SER_2,
       MEMORY_ONLY
     )
@@ -185,13 +185,13 @@ class BlockManagerReplicationSuite extends SparkFunSuite
   }
 
   test("block replication - off-heap") {
-    testReplication(2, Seq(OFF_HEAP, StorageLevel(true, true, true, false, 2)))
+    testReplication(2, Seq(OFF_HEAP, StorageLevel(true, true, true, false, false, 2)))
   }
 
   test("block replication - 2x replication without peers") {
     intercept[org.scalatest.exceptions.TestFailedException] {
       testReplication(1,
-        Seq(StorageLevel.MEMORY_AND_DISK_2, StorageLevel(true, false, false, false, 3)))
+        Seq(StorageLevel.MEMORY_AND_DISK_2, StorageLevel(true, false, false, false, false, 3)))
     }
   }
 
@@ -202,8 +202,8 @@ class BlockManagerReplicationSuite extends SparkFunSuite
       i => makeBlockManager(storeSize, s"store$i")
     }
     val storageLevel2x = StorageLevel.MEMORY_AND_DISK_2
-    val storageLevel3x = StorageLevel(true, true, false, true, 3)
-    val storageLevel4x = StorageLevel(true, true, false, true, 4)
+    val storageLevel3x = StorageLevel(true, true, false, false, true, 3)
+    val storageLevel4x = StorageLevel(true, true, false, false, true, 4)
 
     def putBlockAndGetLocations(blockId: String, level: StorageLevel): Set[BlockManagerId] = {
       stores.head.putSingle(blockId, new Array[Byte](blockSize), level)
@@ -305,7 +305,7 @@ class BlockManagerReplicationSuite extends SparkFunSuite
 
     // Insert a block with given replication factor and return the number of copies of the block\
     def replicateAndGetNumCopies(blockId: String, replicationFactor: Int): Int = {
-      val storageLevel = StorageLevel(true, true, false, true, replicationFactor)
+      val storageLevel = StorageLevel(true, true, false, false, true, replicationFactor)
       initialStores.head.putSingle(blockId, new Array[Byte](blockSize), storageLevel)
       val numLocations = master.getLocations(blockId).size
       allStores.foreach { _.removeBlock(blockId) }
@@ -412,7 +412,7 @@ class BlockManagerReplicationSuite extends SparkFunSuite
         // this store test whether master is updated with zero memory usage this store
         if (storageLevel.useMemory) {
           val sl = if (storageLevel.useOffHeap) {
-            StorageLevel(false, true, true, false, 1)
+            StorageLevel(false, true, true, false, false, 1)
           } else {
             MEMORY_ONLY_SER
           }

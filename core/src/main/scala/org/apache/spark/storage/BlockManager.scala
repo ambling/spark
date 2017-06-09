@@ -41,6 +41,7 @@ import org.apache.spark.rpc.RpcEnv
 import org.apache.spark.serializer.{SerializerInstance, SerializerManager}
 import org.apache.spark.shuffle.ShuffleManager
 import org.apache.spark.storage.memory._
+import org.apache.spark.storage.redis.RedisStore
 import org.apache.spark.unsafe.Platform
 import org.apache.spark.util._
 import org.apache.spark.util.io.ChunkedByteBuffer
@@ -92,6 +93,7 @@ private[spark] class BlockManager(
   private[spark] val memoryStore =
     new MemoryStore(conf, blockInfoManager, serializerManager, memoryManager, this)
   private[spark] val diskStore = new DiskStore(conf, diskBlockManager)
+  private[spark] val redisStore = new RedisStore(conf)
   memoryManager.setMemoryStore(memoryStore)
 
   // Note: depending on the memory manager, `maxMemory` may actually vary over time.
@@ -331,7 +333,10 @@ private[spark] class BlockManager(
   def getStatus(blockId: BlockId): Option[BlockStatus] = {
     blockInfoManager.get(blockId).map { info =>
       val memSize = if (memoryStore.contains(blockId)) memoryStore.getSize(blockId) else 0L
-      val diskSize = if (diskStore.contains(blockId)) diskStore.getSize(blockId) else 0L
+      val diskSize =
+        if (diskStore.contains(blockId)) diskStore.getSize(blockId)
+        else if (redisStore.contains(blockId)) redisStore.getSize(blockId)
+        else 0L
       BlockStatus(info.level, memSize = memSize, diskSize = diskSize)
     }
   }
@@ -400,16 +405,21 @@ private[spark] class BlockManager(
         case level =>
           val inMem = level.useMemory && memoryStore.contains(blockId)
           val onDisk = level.useDisk && diskStore.contains(blockId)
+          val onRedis = level.useRedis && redisStore.contains(blockId)
           val deserialized = if (inMem) level.deserialized else false
           val replication = if (inMem  || onDisk) level.replication else 1
           val storageLevel = StorageLevel(
             useDisk = onDisk,
             useMemory = inMem,
             useOffHeap = level.useOffHeap,
+            useRedis = onRedis,
             deserialized = deserialized,
             replication = replication)
           val memSize = if (inMem) memoryStore.getSize(blockId) else 0L
-          val diskSize = if (onDisk) diskStore.getSize(blockId) else 0L
+          val diskSize =
+            if (onDisk) diskStore.getSize(blockId)
+            else if (onRedis) redisStore.getSize(blockId)
+            else 0L
           BlockStatus(storageLevel, memSize, diskSize)
       }
     }
@@ -474,6 +484,16 @@ private[spark] class BlockManager(
           }
           val ci = CompletionIterator[Any, Iterator[Any]](iterToReturn, releaseLock(blockId))
           Some(new BlockResult(ci, DataReadMethod.Disk, info.size))
+        } else if (level.useRedis && redisStore.contains(blockId)) {
+          val iterToReturn: Iterator[Any] = {
+            val diskBytes = redisStore.getBytes(blockId)
+            val stream = diskBytes.toInputStream()
+            serializerManager.dataDeserializeStream(blockId, stream)(info.classTag)
+          }
+          val ci = CompletionIterator[Any, Iterator[Any]](iterToReturn, {
+            releaseLock(blockId, taskAttemptId)
+          })
+          Some(new BlockResult(ci, DataReadMethod.Redis, info.size))
         } else {
           handleLocalReadFailure(blockId)
         }
@@ -531,6 +551,8 @@ private[spark] class BlockManager(
       } else if (level.useDisk && diskStore.contains(blockId)) {
         val diskBytes = diskStore.getBytes(blockId)
         maybeCacheDiskBytesInMemory(info, blockId, level, diskBytes).getOrElse(diskBytes)
+      } else if (level.useRedis && redisStore.contains(blockId)) {
+        redisStore.getBytes(blockId)
       } else {
         handleLocalReadFailure(blockId)
       }
@@ -821,6 +843,8 @@ private[spark] class BlockManager(
         }
       } else if (level.useDisk) {
         diskStore.putBytes(blockId, bytes)
+      } else if (level.useRedis) {
+        redisStore.putBytes(blockId, bytes)
       }
 
       val putBlockStatus = getCurrentBlockStatus(blockId, info)
@@ -992,6 +1016,11 @@ private[spark] class BlockManager(
           serializerManager.dataSerializeStream(blockId, fileOutputStream, iterator())(classTag)
         }
         size = diskStore.getSize(blockId)
+      } else if (level.useRedis) {
+        redisStore.put(blockId) { outputStream =>
+          serializerManager.dataSerializeStream(blockId, outputStream, iterator())(classTag)
+        }
+        size = redisStore.getSize(blockId)
       }
 
       val putBlockStatus = getCurrentBlockStatus(blockId, info)
@@ -1144,6 +1173,7 @@ private[spark] class BlockManager(
       useDisk = level.useDisk,
       useMemory = level.useMemory,
       useOffHeap = level.useOffHeap,
+      useRedis = level.useRedis,
       deserialized = level.deserialized,
       replication = 1)
 
@@ -1337,7 +1367,8 @@ private[spark] class BlockManager(
     // Removals are idempotent in disk store and memory store. At worst, we get a warning.
     val removedFromMemory = memoryStore.remove(blockId)
     val removedFromDisk = diskStore.remove(blockId)
-    if (!removedFromMemory && !removedFromDisk) {
+    val removedFromRedis = redisStore.remove(blockId)
+    if (!removedFromMemory && !removedFromDisk && !removedFromRedis) {
       logWarning(s"Block $blockId could not be removed as it was not found on disk or in memory")
     }
     blockInfoManager.removeBlock(blockId)

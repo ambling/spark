@@ -546,6 +546,7 @@ class BlockManagerSuite extends SparkFunSuite with Matchers with BeforeAndAfterE
       useDisk = false,
       useMemory = true,
       useOffHeap = true,
+      useRedis = false,
       deserialized = false, replication = 1))
   }
 
