@@ -491,7 +491,7 @@ private[spark] class BlockManager(
             serializerManager.dataDeserializeStream(blockId, stream)(info.classTag)
           }
           val ci = CompletionIterator[Any, Iterator[Any]](iterToReturn, {
-            releaseLock(blockId, taskAttemptId)
+            releaseLock(blockId)
           })
           Some(new BlockResult(ci, DataReadMethod.Redis, info.size))
         } else {

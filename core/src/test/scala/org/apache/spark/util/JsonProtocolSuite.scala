@@ -579,6 +579,7 @@ private[spark] object JsonProtocolSuite extends Assertions {
 
   private def assertEquals(level1: StorageLevel, level2: StorageLevel) {
     assert(level1.useDisk === level2.useDisk)
+    assert(level1.useRedis === level2.useRedis)
     assert(level1.useMemory === level2.useMemory)
     assert(level1.deserialized === level2.deserialized)
     assert(level1.replication === level2.replication)

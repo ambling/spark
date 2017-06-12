@@ -398,6 +398,7 @@ class BlockManagerReplicationSuite extends SparkFunSuite
         // Assert that block status in the master for this store has expected storage level
         assert(
           blockStatus.storageLevel.useDisk === storageLevel.useDisk &&
+            blockStatus.storageLevel.useRedis === storageLevel.useRedis &&
             blockStatus.storageLevel.useMemory === storageLevel.useMemory &&
             blockStatus.storageLevel.useOffHeap === storageLevel.useOffHeap &&
             blockStatus.storageLevel.deserialized === storageLevel.deserialized,

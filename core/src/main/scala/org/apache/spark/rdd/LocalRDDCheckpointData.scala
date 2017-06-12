@@ -42,7 +42,8 @@ private[spark] class LocalRDDCheckpointData[T: ClassTag](@transient private val 
     val level = rdd.getStorageLevel
 
     // Assume storage level uses disk; otherwise memory eviction may cause data loss
-    assume(level.useDisk, s"Storage level $level is not appropriate for local checkpointing")
+    assume(level.useDisk || level.useRedis,
+      s"Storage level $level is not appropriate for local checkpointing")
 
     // Not all actions compute all partitions of the RDD (e.g. take). For correctness, we
     // must cache any missing partitions. TODO: avoid running another job here (SPARK-8582).

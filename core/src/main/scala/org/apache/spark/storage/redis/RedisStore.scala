@@ -17,8 +17,12 @@
 
 package org.apache.spark.storage.redis
 
+import java.nio.ByteBuffer
+
 import com.google.common.io.Closeables
 import com.lambdaworks.redis.RedisClient
+import com.lambdaworks.redis.api.StatefulRedisConnection
+import com.lambdaworks.redis.api.sync.RedisCommands
 
 import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
@@ -34,11 +38,12 @@ private[spark] class RedisStore(conf: SparkConf) extends Logging with AutoClosea
   /**
    * All local connections use unix domain sockets instead of TCP.
    */
-  val sockpath = conf.get("spark.redis.sockpath", "/tmp/redis.sock")
-  val redisClient = RedisClient.create(s"redis-socket://$sockpath")
+  val sockpath: String = conf.get("spark.redis.sockpath", "/tmp/redis.sock")
+  val redisClient: RedisClient = RedisClient.create(s"redis-socket://$sockpath")
   // save blocks as (blockId, ByteBuffer)
-  val connection = redisClient.connect(new StringByteBufferCodec)
-  val syncCommends = connection.sync
+  val connection: StatefulRedisConnection[String, ByteBuffer] =
+    redisClient.connect(new StringByteBufferCodec)
+  val syncCommends: RedisCommands[String, ByteBuffer] = connection.sync
 
   def put(blockId: BlockId)(writeFunc: RedisBytesOutputStream => Unit): Unit = {
     if (contains(blockId)) {

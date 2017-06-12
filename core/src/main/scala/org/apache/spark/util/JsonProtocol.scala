@@ -428,6 +428,7 @@ private[spark] object JsonProtocol {
 
   def storageLevelToJson(storageLevel: StorageLevel): JValue = {
     ("Use Disk" -> storageLevel.useDisk) ~
+    ("Use Redis" -> storageLevel.useRedis) ~
     ("Use Memory" -> storageLevel.useMemory) ~
     ("Deserialized" -> storageLevel.deserialized) ~
     ("Replication" -> storageLevel.replication)

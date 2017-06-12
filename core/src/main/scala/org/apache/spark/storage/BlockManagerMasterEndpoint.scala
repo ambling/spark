@@ -494,7 +494,7 @@ private[spark] class BlockManagerInfo(
           blockId, blockManagerId.hostPort, Utils.bytesToString(memSize),
           Utils.bytesToString(_remainingMem)))
       }
-      if (storageLevel.useDisk) {
+      if (storageLevel.useDisk || storageLevel.useRedis) {
         blockStatus = BlockStatus(storageLevel, memSize = 0, diskSize = diskSize)
         _blocks.put(blockId, blockStatus)
         logInfo("Added %s on disk on %s (size: %s)".format(
@@ -513,7 +513,7 @@ private[spark] class BlockManagerInfo(
           blockId, blockManagerId.hostPort, Utils.bytesToString(blockStatus.memSize),
           Utils.bytesToString(_remainingMem)))
       }
-      if (blockStatus.storageLevel.useDisk) {
+      if (blockStatus.storageLevel.useDisk || blockStatus.storageLevel.useRedis) {
         logInfo("Removed %s on %s on disk (size: %s)".format(
           blockId, blockManagerId.hostPort, Utils.bytesToString(blockStatus.diskSize)))
       }

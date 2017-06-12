@@ -19,9 +19,10 @@ package org.apache.spark.storage.redis
 
 import java.io.{Closeable, OutputStream}
 import java.nio.ByteBuffer
-import java.nio.channels.WritableByteChannel
+import java.nio.channels.{Channels, WritableByteChannel}
 
 import com.lambdaworks.redis.api.StatefulRedisConnection
+import com.lambdaworks.redis.api.async.RedisAsyncCommands
 
 /**
  * An output stream that write (append) bytes to a string value with a specific key
@@ -34,7 +35,7 @@ private[spark] class RedisBytesOutputStream(
   var closed: Boolean = false
 
   // use asynchronous commend to write data
-  val asyncCommend = connection.async()
+  val asyncCommend: RedisAsyncCommands[String, ByteBuffer] = connection.async()
 
   override def write(b: Int): Unit = {
     asyncCommend.append(key, ByteBuffer.wrap(Array(b.toByte)))
@@ -59,18 +60,6 @@ private[spark] class RedisBytesOutputStream(
   }
 
   def getChannel: WritableByteChannel = {
-    new RedisByteChannel(this)
+    Channels.newChannel(this)
   }
-}
-
-private[spark] class RedisByteChannel(stream: RedisBytesOutputStream) extends WritableByteChannel {
-
-  override def write(src: ByteBuffer): Int = {
-    stream.write(src.array(), src.position(), src.remaining())
-    src.remaining()
-  }
-
-  override def isOpen: Boolean = stream.closed
-
-  override def close(): Unit = stream.close()
 }

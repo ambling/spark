@@ -650,7 +650,8 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
     case clazz: Class[_] => JString(clazz.getName)
     case s: StorageLevel =>
       ("useDisk" -> s.useDisk) ~ ("useMemory" -> s.useMemory) ~ ("useOffHeap" -> s.useOffHeap) ~
-        ("deserialized" -> s.deserialized) ~ ("replication" -> s.replication)
+        ("useRedis" -> s.useRedis) ~ ("deserialized" -> s.deserialized) ~
+        ("replication" -> s.replication)
     case n: TreeNode[_] => n.jsonValue
     case o: Option[_] => o.map(parseToJson)
     // Recursive scan Seq[TreeNode], Seq[Partitioning], Seq[DataType]
