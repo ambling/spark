@@ -43,7 +43,7 @@ private[spark] class RedisStore(conf: SparkConf) extends Logging with AutoClosea
   // save blocks as (blockId, ByteBuffer)
   val connection: StatefulRedisConnection[String, ByteBuffer] =
     redisClient.connect(new StringByteBufferCodec)
-  val syncCommends: RedisCommands[String, ByteBuffer] = connection.sync
+  val syncCommands: RedisCommands[String, ByteBuffer] = connection.sync
 
   def put(blockId: BlockId)(writeFunc: RedisBytesOutputStream => Unit): Unit = {
     if (contains(blockId)) {
@@ -83,21 +83,21 @@ private[spark] class RedisStore(conf: SparkConf) extends Logging with AutoClosea
   }
 
   def getSize(blockId: BlockId): Long = {
-    syncCommends.strlen(blockId.name)
+    syncCommands.strlen(blockId.name)
   }
 
   def getBytes(blockId: BlockId): ChunkedByteBuffer = {
-    val data = syncCommends.get(blockId.name)
+    val data = syncCommands.get(blockId.name)
     new ChunkedByteBuffer(data)
   }
 
   def remove(blockId: BlockId): Boolean = {
-    val deleted = syncCommends.del(Seq(blockId.name): _*)
+    val deleted = syncCommands.del(Seq(blockId.name): _*)
     deleted == 1
   }
 
   def contains(blockId: BlockId): Boolean = {
-    val existed = syncCommends.exists(Seq(blockId.name): _*)
+    val existed = syncCommands.exists(Seq(blockId.name): _*)
     existed == 1
   }
 

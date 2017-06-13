@@ -29,7 +29,7 @@ import io.netty.buffer.Unpooled
  */
 class StringByteBufferCodec extends RedisCodec[String, ByteBuffer] {
 
-  val charset = Charset.forName("US-ASCII")
+  val charset: Charset = Charset.forName("US-ASCII")
 
   override def decodeKey(bytes: ByteBuffer): String = {
     Unpooled.wrappedBuffer(bytes).toString(charset)

@@ -21,8 +21,12 @@ import java.io.{Closeable, OutputStream}
 import java.nio.ByteBuffer
 import java.nio.channels.{Channels, WritableByteChannel}
 
+import scala.collection.mutable.ArrayBuffer
+
+import com.lambdaworks.redis.RedisFuture
 import com.lambdaworks.redis.api.StatefulRedisConnection
 import com.lambdaworks.redis.api.async.RedisAsyncCommands
+
 
 /**
  * An output stream that write (append) bytes to a string value with a specific key
@@ -32,26 +36,38 @@ private[spark] class RedisBytesOutputStream(
     val key: String)
   extends OutputStream with Closeable {
 
+  var writed: Long = 0
   var closed: Boolean = false
+  val futures: ArrayBuffer[RedisFuture[java.lang.Long]] =
+    new ArrayBuffer[RedisFuture[java.lang.Long]]
 
   // use asynchronous commend to write data
-  val asyncCommend: RedisAsyncCommands[String, ByteBuffer] = connection.async()
+  val asyncCommand: RedisAsyncCommands[String, ByteBuffer] = connection.async()
 
   override def write(b: Int): Unit = {
-    asyncCommend.append(key, ByteBuffer.wrap(Array(b.toByte)))
+    val buf = ByteBuffer.allocate(4)
+    buf.putInt(b)
+    buf.rewind()
+    buf.position(3)
+    val future = asyncCommand.append(key, buf)
+    futures += future
   }
 
   override def write(b: Array[Byte]): Unit = {
-    asyncCommend.append(key, ByteBuffer.wrap(b))
+    val future = asyncCommand.append(key, ByteBuffer.wrap(b))
+    futures += future
   }
 
   override def write(b: Array[Byte], off: Int, len: Int): Unit = {
     val buf = ByteBuffer.wrap(b, off, len)
-    asyncCommend.append(key, buf)
+    val future = asyncCommand.append(key, buf)
+    futures += future
   }
 
   override def flush(): Unit = {
-    asyncCommend.flushCommands()
+    // TODO to be thread-safe
+    for (future <- futures) writed += future.get()
+    futures.clear()
   }
 
   override def close(): Unit = {

@@ -486,8 +486,8 @@ private[spark] class BlockManager(
           Some(new BlockResult(ci, DataReadMethod.Disk, info.size))
         } else if (level.useRedis && redisStore.contains(blockId)) {
           val iterToReturn: Iterator[Any] = {
-            val diskBytes = redisStore.getBytes(blockId)
-            val stream = diskBytes.toInputStream()
+            val redisBytes = redisStore.getBytes(blockId)
+            val stream = redisBytes.toInputStream()
             serializerManager.dataDeserializeStream(blockId, stream)(info.classTag)
           }
           val ci = CompletionIterator[Any, Iterator[Any]](iterToReturn, {
