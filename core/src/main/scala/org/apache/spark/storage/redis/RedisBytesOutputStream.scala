@@ -19,7 +19,8 @@ package org.apache.spark.storage.redis
 
 import java.io.{Closeable, OutputStream}
 import java.nio.ByteBuffer
-import java.nio.channels.{Channels, WritableByteChannel}
+import java.nio.channels.WritableByteChannel
+import java.nio.channels.spi.AbstractInterruptibleChannel
 
 import scala.collection.mutable.ArrayBuffer
 
@@ -47,26 +48,31 @@ private[spark] class RedisBytesOutputStream(
   override def write(b: Int): Unit = {
     val buf = ByteBuffer.allocate(4)
     buf.putInt(b)
-    buf.rewind()
+    buf.flip()
     buf.position(3)
-    val future = asyncCommand.append(key, buf)
-    futures += future
+    write(buf)
   }
 
   override def write(b: Array[Byte]): Unit = {
-    val future = asyncCommand.append(key, ByteBuffer.wrap(b))
-    futures += future
+    write(ByteBuffer.wrap(b))
   }
 
   override def write(b: Array[Byte], off: Int, len: Int): Unit = {
     val buf = ByteBuffer.wrap(b, off, len)
+    write(buf)
+  }
+
+  /**
+   * convenient write content in a bytebuffer
+   */
+  def write(buf: ByteBuffer): Unit = {
     val future = asyncCommand.append(key, buf)
-    futures += future
+    futures.append(future)
   }
 
   override def flush(): Unit = {
     // TODO to be thread-safe
-    for (future <- futures) writed += future.get()
+    for (future <- futures) writed = future.get()
     futures.clear()
   }
 
@@ -76,6 +82,44 @@ private[spark] class RedisBytesOutputStream(
   }
 
   def getChannel: WritableByteChannel = {
-    Channels.newChannel(this)
+    new UnbufferedWritableByteChannel(this)
+  }
+}
+
+/**
+ * The WritableByteChannelImpl class defined in [[java.nio.channels.Channels]] is actually buffered
+ * and may lead to error if each write operation is not flushed immediately.
+ *
+ * The buffer is actually unnecessary since the input is already a buffer itself.
+ */
+class UnbufferedWritableByteChannel(val out: RedisBytesOutputStream)
+  extends AbstractInterruptibleChannel with WritableByteChannel {
+
+  private val TRANSFER_SIZE = 8192
+  private var open = true
+
+  override def write(src: ByteBuffer): Int = {
+    val len = src.remaining
+    var totalWritten = 0
+    this.synchronized {
+
+      while (totalWritten < len) {
+        val bytesToWrite = Math.min(len - totalWritten, TRANSFER_SIZE)
+        try {
+          begin()
+          val buf = src.duplicate()
+          buf.limit(buf.position() + bytesToWrite)
+          out.write(buf)
+          src.position(src.position() + bytesToWrite)
+        } finally end(bytesToWrite > 0)
+        totalWritten += bytesToWrite
+      }
+      return totalWritten
+    }
+  }
+
+  override protected def implCloseChannel(): Unit = {
+    out.close()
+    open = false
   }
 }
