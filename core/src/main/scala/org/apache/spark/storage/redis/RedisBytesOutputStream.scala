@@ -22,11 +22,8 @@ import java.nio.ByteBuffer
 import java.nio.channels.WritableByteChannel
 import java.nio.channels.spi.AbstractInterruptibleChannel
 
-import scala.collection.mutable.ArrayBuffer
-
-import com.lambdaworks.redis.RedisFuture
 import com.lambdaworks.redis.api.StatefulRedisConnection
-import com.lambdaworks.redis.api.async.RedisAsyncCommands
+import com.lambdaworks.redis.api.sync.RedisCommands
 
 
 /**
@@ -37,13 +34,10 @@ private[spark] class RedisBytesOutputStream(
     val key: String)
   extends OutputStream with Closeable {
 
-  var writed: Long = 0
   var closed: Boolean = false
-  val futures: ArrayBuffer[RedisFuture[java.lang.Long]] =
-    new ArrayBuffer[RedisFuture[java.lang.Long]]
 
   // use asynchronous commend to write data
-  val asyncCommand: RedisAsyncCommands[String, ByteBuffer] = connection.async()
+  val syncCommand: RedisCommands[String, ByteBuffer] = connection.sync()
 
   override def write(b: Int): Unit = {
     val buf = ByteBuffer.allocate(4)
@@ -66,19 +60,14 @@ private[spark] class RedisBytesOutputStream(
    * convenient write content in a bytebuffer
    */
   def write(buf: ByteBuffer): Unit = {
-    val future = asyncCommand.append(key, buf)
-    futures.append(future)
+    syncCommand.append(key, buf)
   }
 
   override def flush(): Unit = {
-    // TODO to be thread-safe
-    for (future <- futures) writed = future.get()
-    futures.clear()
   }
 
   override def close(): Unit = {
     closed = true
-    flush()
   }
 
   def getChannel: WritableByteChannel = {
