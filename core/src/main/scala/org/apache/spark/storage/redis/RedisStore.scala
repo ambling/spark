@@ -19,6 +19,8 @@ package org.apache.spark.storage.redis
 
 import java.nio.ByteBuffer
 
+import scala.collection.JavaConverters._
+
 import com.google.common.io.Closeables
 import com.lambdaworks.redis.RedisClient
 import com.lambdaworks.redis.api.StatefulRedisConnection
@@ -27,6 +29,7 @@ import com.lambdaworks.redis.api.sync.RedisCommands
 import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
 import org.apache.spark.storage.BlockId
+import org.apache.spark.storage.redis.index.IndexWriter
 import org.apache.spark.util.Utils
 import org.apache.spark.util.io.ChunkedByteBuffer
 
@@ -92,13 +95,24 @@ private[spark] class RedisStore(conf: SparkConf) extends Logging with AutoClosea
   }
 
   def remove(blockId: BlockId): Boolean = {
-    val deleted = syncCommands.del(Seq(blockId.name): _*)
-    deleted == 1
+    val deleted = syncCommands.del(blockId.name)
+    if (deleted == 1) {
+      val allKeys = IndexWriter.allIndexesKey(blockId)
+      val indexNames = syncCommands.smembers(allKeys)
+      val keys = indexNames.asScala.toSeq.map { name =>
+        IndexWriter.indexKey(blockId, new String(name.array()))
+      }
+      syncCommands.del(allKeys)
+      syncCommands.del(keys: _*)
+
+      true
+    } else {
+      false
+    }
   }
 
   def contains(blockId: BlockId): Boolean = {
-    val existed = syncCommands.exists(Seq(blockId.name): _*)
-    existed == 1
+    syncCommands.exists(blockId.name)
   }
 
   override def close(): Unit = {

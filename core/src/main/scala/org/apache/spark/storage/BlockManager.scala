@@ -41,7 +41,8 @@ import org.apache.spark.rpc.RpcEnv
 import org.apache.spark.serializer.{SerializerInstance, SerializerManager}
 import org.apache.spark.shuffle.ShuffleManager
 import org.apache.spark.storage.memory._
-import org.apache.spark.storage.redis.RedisStore
+import org.apache.spark.storage.redis.{RedisBytesChannel, RedisStore}
+import org.apache.spark.storage.redis.index.{IndexQuerier, IndexWriter}
 import org.apache.spark.unsafe.Platform
 import org.apache.spark.util._
 import org.apache.spark.util.io.ChunkedByteBuffer
@@ -1320,6 +1321,31 @@ private[spark] class BlockManager(
   }
 
   /**
+   * Get a writer for index construction on Redis
+   * TODO need a index manager for locking
+   */
+  def getIndexWriter(blockId: BlockId, indexName: String): IndexWriter = {
+    new IndexWriter(redisStore.connection, blockId, indexName)
+  }
+
+  /**
+   * Get a querier for index access on Redis
+   * TODO need a index manager for locking
+   */
+  def getIndexQuerier(blockId: BlockId, indexName: String): IndexQuerier = {
+    new IndexQuerier(redisStore.connection, blockId, indexName)
+  }
+
+  /**
+   * Open a seekable read/write channel on a block on Redis.
+   * This is used for index based data store and retrieval.
+   * TODO need to check the storage level. Need to acquire locks
+   */
+  def getRedisChannel(blockId: BlockId): RedisBytesChannel = {
+    new RedisBytesChannel(redisStore.connection, blockId.name, false)
+  }
+
+  /**
    * Remove all blocks belonging to the given RDD.
    *
    * @return The number of blocks removed.
@@ -1391,8 +1417,14 @@ private[spark] class BlockManager(
     }
     diskBlockManager.stop()
     rpcEnv.stop(slaveEndpoint)
+
+    // clear blocks in redis, can only clear from blockInfoManager
+    blockInfoManager.entries.foreach { entry =>
+      if (entry._2.level.useRedis) redisStore.remove(entry._1)
+    }
     blockInfoManager.clear()
     memoryStore.clear()
+    redisStore.close()
     futureExecutionContext.shutdownNow()
     logInfo("BlockManager stopped")
   }
