@@ -17,7 +17,9 @@
 
 package org.apache.spark.storage.redis
 
+import java.io.InputStream
 import java.nio.ByteBuffer
+import java.nio.channels.Channels
 
 import scala.collection.JavaConverters._
 
@@ -37,6 +39,8 @@ import org.apache.spark.util.io.ChunkedByteBuffer
  * Store blocks on Redis.
  */
 private[spark] class RedisStore(conf: SparkConf) extends Logging with AutoCloseable {
+
+  val streamThreshold: Long = conf.getSizeAsBytes("spark.storage.memoryMapThreshold", "2m")
 
   /**
    * All local connections use unix domain sockets instead of TCP.
@@ -92,6 +96,11 @@ private[spark] class RedisStore(conf: SparkConf) extends Logging with AutoClosea
   def getBytes(blockId: BlockId): ChunkedByteBuffer = {
     val data = syncCommands.get(blockId.name)
     new ChunkedByteBuffer(data)
+  }
+
+  def getInputStream(blockId: BlockId): InputStream = {
+    val channel = new RedisBytesChannel(connection, blockId.name, false)
+    Channels.newInputStream(channel)
   }
 
   def remove(blockId: BlockId): Boolean = {

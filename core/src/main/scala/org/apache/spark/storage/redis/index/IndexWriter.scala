@@ -21,13 +21,15 @@ import java.nio.ByteBuffer
 
 import com.lambdaworks.redis.api.StatefulRedisConnection
 
+import org.apache.spark.annotation.DeveloperApi
 import org.apache.spark.storage.BlockId
 
 /**
  *
  * A helper class to write index nodes into a Redis store.
  */
-private[spark] class IndexWriter(
+@DeveloperApi
+class IndexWriter(
     val connection: StatefulRedisConnection[String, ByteBuffer],
     val blockId: BlockId,
     val indexName: String) {

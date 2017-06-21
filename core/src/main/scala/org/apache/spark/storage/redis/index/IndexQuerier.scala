@@ -21,12 +21,14 @@ import java.nio.ByteBuffer
 
 import com.lambdaworks.redis.api.StatefulRedisConnection
 
+import org.apache.spark.annotation.DeveloperApi
 import org.apache.spark.storage.BlockId
 
 /**
  * A helper class to query index nodes from a Redis store.
  */
-private[spark] class IndexQuerier(
+@DeveloperApi
+class IndexQuerier(
     val connection: StatefulRedisConnection[String, ByteBuffer],
     val blockId: BlockId,
     val indexName: String) {
