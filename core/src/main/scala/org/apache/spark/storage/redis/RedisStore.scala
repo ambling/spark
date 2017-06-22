@@ -124,6 +124,11 @@ private[spark] class RedisStore(conf: SparkConf) extends Logging with AutoClosea
     syncCommands.exists(blockId.name)
   }
 
+  def exist(blockId: BlockId, indexName: String): Boolean = {
+    val allKeys = IndexWriter.allIndexesKey(blockId)
+    syncCommands.sismember(allKeys, ByteBuffer.wrap(indexName.getBytes))
+  }
+
   override def close(): Unit = {
     connection.close()
     redisClient.shutdown()

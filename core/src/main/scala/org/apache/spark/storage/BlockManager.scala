@@ -1343,6 +1343,13 @@ private[spark] class BlockManager(
   }
 
   /**
+   * Check if the index exists in the block
+   */
+  def checkIndex(blockId: BlockId, indexName: String): Boolean = {
+    redisStore.exist(blockId, indexName)
+  }
+
+  /**
    * Open a seekable read/write channel on a block on Redis.
    * This is used for index based data store and retrieval.
    * TODO need to check the storage level. Need to acquire locks
