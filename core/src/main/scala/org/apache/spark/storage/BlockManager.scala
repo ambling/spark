@@ -41,7 +41,7 @@ import org.apache.spark.rpc.RpcEnv
 import org.apache.spark.serializer.{SerializerInstance, SerializerManager}
 import org.apache.spark.shuffle.ShuffleManager
 import org.apache.spark.storage.memory._
-import org.apache.spark.storage.redis.{RedisBytesChannel, RedisStore}
+import org.apache.spark.storage.redis.{RedisBytesChannel, RedisStore, SerializedBuffer}
 import org.apache.spark.storage.redis.index.{IndexQuerier, IndexWriter}
 import org.apache.spark.unsafe.Platform
 import org.apache.spark.util._
@@ -495,7 +495,12 @@ private[spark] class BlockManager(
               redisBytes.toInputStream()
             }
 
-            serializerManager.dataDeserializeStream(blockId, stream)(info.classTag)
+            if (info.classTag.runtimeClass == classOf[SerializedBuffer]) {
+              // read from serialized buffers
+              redisStore.getBuffers(stream)
+            } else {
+              serializerManager.dataDeserializeStream(blockId, stream)(info.classTag)
+            }
           }
           val ci = CompletionIterator[Any, Iterator[Any]](iterToReturn, {
             releaseLock(blockId)
@@ -1025,7 +1030,12 @@ private[spark] class BlockManager(
         size = diskStore.getSize(blockId)
       } else if (level.useRedis) {
         redisStore.put(blockId) { outputStream =>
-          serializerManager.dataSerializeStream(blockId, outputStream, iterator())(classTag)
+          if (classTag.runtimeClass == classOf[SerializedBuffer]) {
+            // the objects have been serialized to buffers, write directly with length
+            redisStore.putBuffers(outputStream, iterator().asInstanceOf[Iterator[SerializedBuffer]])
+          } else {
+            serializerManager.dataSerializeStream(blockId, outputStream, iterator())(classTag)
+          }
         }
         size = redisStore.getSize(blockId)
       }

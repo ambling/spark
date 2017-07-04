@@ -17,7 +17,7 @@
 
 package org.apache.spark.storage.redis
 
-import java.io.InputStream
+import java.io._
 import java.nio.ByteBuffer
 import java.nio.channels.Channels
 
@@ -30,10 +30,11 @@ import com.lambdaworks.redis.api.sync.RedisCommands
 
 import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
-import org.apache.spark.storage.BlockId
+import org.apache.spark.storage.{BlockId, BlockInfo}
 import org.apache.spark.storage.redis.index.IndexWriter
-import org.apache.spark.util.Utils
+import org.apache.spark.util.{NextIterator, Utils}
 import org.apache.spark.util.io.ChunkedByteBuffer
+
 
 /**
  * Store blocks on Redis.
@@ -78,6 +79,16 @@ private[spark] class RedisStore(conf: SparkConf) extends Logging with AutoClosea
       finishTime - startTime))
   }
 
+  def putBuffers(output: OutputStream, iter: Iterator[SerializedBuffer]): Unit = {
+    val dataStream = new DataOutputStream(new BufferedOutputStream(output))
+    iter.foreach { data =>
+      val buf = data.buffer
+      dataStream.writeInt(data.length)
+      dataStream.write(buf.array(), buf.position(), buf.remaining())
+    }
+    dataStream.close()
+  }
+
   def putBytes(blockId: BlockId, bytes: ChunkedByteBuffer): Unit = {
     put(blockId) { outputStream =>
       val channel = outputStream.getChannel
@@ -103,6 +114,30 @@ private[spark] class RedisStore(conf: SparkConf) extends Logging with AutoClosea
     Channels.newInputStream(channel)
   }
 
+  def getBuffers(input: InputStream): Iterator[SerializedBuffer] = {
+    val dataInput = new DataInputStream(new BufferedInputStream(input))
+    new NextIterator[SerializedBuffer] {
+
+      override protected def getNext(): SerializedBuffer = {
+        try {
+          val length = dataInput.readInt()
+          val data = new Array[Byte](length)
+          dataInput.readFully(data)
+          val buf = ByteBuffer.wrap(data)
+          new SerializedBuffer(buf)
+        } catch {
+          case eof: EOFException =>
+            finished = true
+            null
+        }
+      }
+
+      override protected def close(): Unit = {
+        dataInput.close()
+      }
+    }
+  }
+
   def remove(blockId: BlockId): Boolean = {
     val deleted = syncCommands.del(blockId.name)
     if (deleted == 1) {
@@ -112,7 +147,7 @@ private[spark] class RedisStore(conf: SparkConf) extends Logging with AutoClosea
         IndexWriter.indexKey(blockId, new String(name.array()))
       }
       syncCommands.del(allKeys)
-      syncCommands.del(keys: _*)
+      if (keys.nonEmpty) syncCommands.del(keys: _*)
 
       true
     } else {
