@@ -19,7 +19,6 @@ package org.apache.spark.storage.redis
 
 import java.io._
 import java.nio.ByteBuffer
-import java.nio.channels.Channels
 
 import scala.collection.JavaConverters._
 
@@ -30,7 +29,7 @@ import com.lambdaworks.redis.api.sync.RedisCommands
 
 import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
-import org.apache.spark.storage.{BlockId, BlockInfo}
+import org.apache.spark.storage.BlockId
 import org.apache.spark.storage.redis.index.IndexWriter
 import org.apache.spark.util.{NextIterator, Utils}
 import org.apache.spark.util.io.ChunkedByteBuffer
@@ -53,13 +52,14 @@ private[spark] class RedisStore(conf: SparkConf) extends Logging with AutoClosea
     redisClient.connect(new StringByteBufferCodec)
   val syncCommands: RedisCommands[String, ByteBuffer] = connection.sync
 
-  def put(blockId: BlockId)(writeFunc: RedisBytesOutputStream => Unit): Unit = {
+  def put(blockId: BlockId)(writeFunc: OutputStream => Unit): Unit = {
     if (contains(blockId)) {
       throw new IllegalStateException(s"Block $blockId is already present in the disk store")
     }
     logDebug(s"Attempting to put block $blockId")
     val startTime = System.currentTimeMillis
-    val outputStream = new RedisBytesOutputStream(connection, blockId.name)
+    val outputStream =
+      new BufferedOutputStream(new RedisBytesOutputStream(connection, blockId.name))
     var threwException: Boolean = true
     try {
       writeFunc(outputStream)
@@ -80,23 +80,19 @@ private[spark] class RedisStore(conf: SparkConf) extends Logging with AutoClosea
   }
 
   def putBuffers(output: OutputStream, iter: Iterator[SerializedBuffer]): Unit = {
-    val dataStream = new DataOutputStream(new BufferedOutputStream(output))
+    val dataStream = new DataOutputStream(output)
     iter.foreach { data =>
       val buf = data.buffer
       dataStream.writeInt(data.length)
-      dataStream.write(buf.array(), buf.position(), buf.remaining())
+      dataStream.write(buf.array(), buf.arrayOffset + buf.position, buf.remaining())
     }
-    dataStream.close()
+    dataStream.flush()
   }
 
   def putBytes(blockId: BlockId, bytes: ChunkedByteBuffer): Unit = {
     put(blockId) { outputStream =>
-      val channel = outputStream.getChannel
-      Utils.tryWithSafeFinally {
-        bytes.writeFully(channel)
-      } {
-        channel.close()
-      }
+      bytes.getChunks().foreach(buf =>
+        outputStream.write(buf.array, buf.arrayOffset + buf.position, buf.remaining))
     }
   }
 
@@ -110,8 +106,7 @@ private[spark] class RedisStore(conf: SparkConf) extends Logging with AutoClosea
   }
 
   def getInputStream(blockId: BlockId): InputStream = {
-    val channel = new RedisBytesChannel(connection, blockId.name, false)
-    Channels.newInputStream(channel)
+    new RedisBytesInputStream(connection, blockId.name)
   }
 
   def getBuffers(input: InputStream): Iterator[SerializedBuffer] = {
@@ -139,16 +134,8 @@ private[spark] class RedisStore(conf: SparkConf) extends Logging with AutoClosea
   }
 
   def remove(blockId: BlockId): Boolean = {
-    val deleted = syncCommands.del(blockId.name)
-    if (deleted == 1) {
-      val allKeys = IndexWriter.allIndexesKey(blockId)
-      val indexNames = syncCommands.smembers(allKeys)
-      val keys = indexNames.asScala.toSeq.map { name =>
-        IndexWriter.indexKey(blockId, new String(name.array()))
-      }
-      syncCommands.del(allKeys)
-      if (keys.nonEmpty) syncCommands.del(keys: _*)
-
+    val allkeys = syncCommands.keys(blockId.name + "*").asScala
+    if (allkeys.nonEmpty && syncCommands.del(allkeys: _*) > 0) {
       true
     } else {
       false
@@ -156,7 +143,8 @@ private[spark] class RedisStore(conf: SparkConf) extends Logging with AutoClosea
   }
 
   def contains(blockId: BlockId): Boolean = {
-    syncCommands.exists(blockId.name)
+    val exist = syncCommands.exists(Seq(blockId.name): _*)
+    exist == 1
   }
 
   def exist(blockId: BlockId, indexName: String): Boolean = {
@@ -165,6 +153,7 @@ private[spark] class RedisStore(conf: SparkConf) extends Logging with AutoClosea
   }
 
   override def close(): Unit = {
+    syncCommands.flushall()
     connection.close()
     redisClient.shutdown()
   }

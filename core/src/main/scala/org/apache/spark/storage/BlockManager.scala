@@ -41,7 +41,7 @@ import org.apache.spark.rpc.RpcEnv
 import org.apache.spark.serializer.{SerializerInstance, SerializerManager}
 import org.apache.spark.shuffle.ShuffleManager
 import org.apache.spark.storage.memory._
-import org.apache.spark.storage.redis.{RedisBytesChannel, RedisStore, SerializedBuffer}
+import org.apache.spark.storage.redis.{RedisStore, SerializedBuffer}
 import org.apache.spark.storage.redis.index.{IndexQuerier, IndexWriter}
 import org.apache.spark.unsafe.Platform
 import org.apache.spark.util._
@@ -1070,7 +1070,8 @@ private[spark] class BlockManager(
             .format(blockId, Utils.getUsedTimeMs(remoteStartTime)))
         }
       }
-      assert(blockWasSuccessfullyStored == iteratorFromFailedMemoryStorePut.isEmpty)
+      assert(blockWasSuccessfullyStored == iteratorFromFailedMemoryStorePut.isEmpty,
+        s"Fail putting data: blockWasSuccessfullyStored - $blockWasSuccessfullyStored")
       iteratorFromFailedMemoryStorePut
     }
   }
@@ -1360,12 +1361,12 @@ private[spark] class BlockManager(
   }
 
   /**
-   * Open a seekable read/write channel on a block on Redis.
-   * This is used for index based data store and retrieval.
+   * Open a input stream on a block on Redis.
+   * This is used for index based data retrieval.
    * TODO need to check the storage level. Need to acquire locks
    */
-  def getRedisChannel(blockId: BlockId): RedisBytesChannel = {
-    new RedisBytesChannel(redisStore.connection, blockId.name, false)
+  def getRedisInputStream(blockId: BlockId): InputStream = {
+    redisStore.getInputStream(blockId)
   }
 
   /**

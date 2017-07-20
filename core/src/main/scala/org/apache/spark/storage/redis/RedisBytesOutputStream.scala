@@ -17,10 +17,9 @@
 
 package org.apache.spark.storage.redis
 
-import java.io.{Closeable, OutputStream}
+import java.io.{BufferedOutputStream, OutputStream}
 import java.nio.ByteBuffer
-import java.nio.channels.WritableByteChannel
-import java.nio.channels.spi.AbstractInterruptibleChannel
+import java.nio.channels.{Channels, WritableByteChannel}
 
 import com.lambdaworks.redis.api.StatefulRedisConnection
 import com.lambdaworks.redis.api.sync.RedisCommands
@@ -31,9 +30,10 @@ import com.lambdaworks.redis.api.sync.RedisCommands
 private[spark] class RedisBytesOutputStream(
     val connection: StatefulRedisConnection[String, ByteBuffer],
     val key: String)
-  extends OutputStream with Closeable {
+  extends OutputStream {
 
-  val channel = new RedisBytesChannel(connection, key, true)
+  private var closed: Boolean = false
+  private val syncCommand: RedisCommands[String, ByteBuffer] = connection.sync
 
   override def write(b: Int): Unit = {
     val buf = ByteBuffer.allocate(4)
@@ -52,22 +52,19 @@ private[spark] class RedisBytesOutputStream(
     write(buf)
   }
 
-  /**
-   * convenient write content in a bytebuffer
-   */
   def write(buf: ByteBuffer): Unit = {
-    channel.write(buf)
+    syncCommand.append(key, buf)
   }
 
   override def flush(): Unit = {
   }
 
   override def close(): Unit = {
-    channel.close()
+    closed = true
   }
 
   def getChannel: WritableByteChannel = {
-    channel
+    Channels.newChannel(new BufferedOutputStream(this))
   }
 }
 

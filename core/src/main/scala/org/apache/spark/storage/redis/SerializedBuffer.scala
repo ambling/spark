@@ -37,6 +37,6 @@ final class SerializedBuffer(var buffer: ByteBuffer) extends KryoSerializable {
 
   override def write(kryo: Kryo, output: Output): Unit = {
     output.writeInt(length)
-    output.writeBytes(buffer.array(), buffer.position(), buffer.remaining())
+    output.writeBytes(buffer.array(), buffer.arrayOffset + buffer.position, buffer.remaining())
   }
 }
