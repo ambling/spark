@@ -31,8 +31,9 @@ import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
 import org.apache.spark.storage.BlockId
 import org.apache.spark.storage.redis.index.IndexWriter
-import org.apache.spark.util.{NextIterator, Utils}
+import org.apache.spark.util.NextIterator
 import org.apache.spark.util.io.ChunkedByteBuffer
+
 
 
 /**
@@ -82,9 +83,8 @@ private[spark] class RedisStore(conf: SparkConf) extends Logging with AutoClosea
   def putBuffers(output: OutputStream, iter: Iterator[SerializedBuffer]): Unit = {
     val dataStream = new DataOutputStream(output)
     iter.foreach { data =>
-      val buf = data.buffer
       dataStream.writeInt(data.length)
-      dataStream.write(buf.array(), buf.arrayOffset + buf.position, buf.remaining())
+      dataStream.write(data.buffer)
     }
     dataStream.flush()
   }
@@ -106,11 +106,11 @@ private[spark] class RedisStore(conf: SparkConf) extends Logging with AutoClosea
   }
 
   def getInputStream(blockId: BlockId): InputStream = {
-    new RedisBytesInputStream(connection, blockId.name)
+    new BufferedInputStream(new RedisBytesInputStream(connection, blockId.name))
   }
 
   def getBuffers(input: InputStream): Iterator[SerializedBuffer] = {
-    val dataInput = new DataInputStream(new BufferedInputStream(input))
+    val dataInput = new DataInputStream(input)
     new NextIterator[SerializedBuffer] {
 
       override protected def getNext(): SerializedBuffer = {
@@ -118,8 +118,7 @@ private[spark] class RedisStore(conf: SparkConf) extends Logging with AutoClosea
           val length = dataInput.readInt()
           val data = new Array[Byte](length)
           dataInput.readFully(data)
-          val buf = ByteBuffer.wrap(data)
-          new SerializedBuffer(buf)
+          new SerializedBuffer(data)
         } catch {
           case eof: EOFException =>
             finished = true

@@ -17,26 +17,24 @@
 
 package org.apache.spark.storage.redis
 
-import java.nio.ByteBuffer
-
 import com.esotericsoftware.kryo.{Kryo, KryoSerializable}
 import com.esotericsoftware.kryo.io.{Input, Output}
 
 /**
  * A buffer of serialized data. This is used to move serialization process to users.
  */
-final class SerializedBuffer(var buffer: ByteBuffer) extends KryoSerializable {
+final class SerializedBuffer(var buffer: Array[Byte]) extends KryoSerializable {
 
-  def length: Int = buffer.remaining()
+  def length: Int = buffer.length
 
   override def read(kryo: Kryo, input: Input): Unit = {
     val len = input.readInt()
-    buffer = ByteBuffer.allocate(len)
-    input.readBytes(buffer.array())
+    buffer = new Array[Byte](len)
+    input.readBytes(buffer)
   }
 
   override def write(kryo: Kryo, output: Output): Unit = {
     output.writeInt(length)
-    output.writeBytes(buffer.array(), buffer.arrayOffset + buffer.position, buffer.remaining())
+    output.writeBytes(buffer)
   }
 }
