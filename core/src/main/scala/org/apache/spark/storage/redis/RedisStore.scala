@@ -39,14 +39,18 @@ import org.apache.spark.util.io.ChunkedByteBuffer
 /**
  * Store blocks on Redis.
  */
-private[spark] class RedisStore(conf: SparkConf) extends Logging with AutoCloseable {
+private[spark] class RedisStore(conf: SparkConf, executor: String)
+  extends Logging with AutoCloseable {
 
   val streamThreshold: Long = conf.getSizeAsBytes("spark.storage.memoryMapThreshold", "2m")
+
+  // two redis server per node
+  val redisServerId: Int = executor.last.toInt % 3 + 1
 
   /**
    * All local connections use unix domain sockets instead of TCP.
    */
-  val sockpath: String = conf.get("spark.redis.sockpath", "/tmp/redis.sock")
+  val sockpath: String = conf.get("spark.redis.sockpath", s"/tmp/redis.$redisServerId.sock")
   val redisClient: RedisClient = RedisClient.create(s"redis-socket://$sockpath")
   // save blocks as (blockId, ByteBuffer)
   val connection: StatefulRedisConnection[String, ByteBuffer] =

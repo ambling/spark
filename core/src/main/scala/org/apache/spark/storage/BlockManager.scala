@@ -94,7 +94,7 @@ private[spark] class BlockManager(
   private[spark] val memoryStore =
     new MemoryStore(conf, blockInfoManager, serializerManager, memoryManager, this)
   private[spark] val diskStore = new DiskStore(conf, diskBlockManager)
-  private[spark] val redisStore = new RedisStore(conf)
+  private[spark] val redisStore = new RedisStore(conf, executorId)
   memoryManager.setMemoryStore(memoryStore)
 
   // Note: depending on the memory manager, `maxMemory` may actually vary over time.
