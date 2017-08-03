@@ -85,6 +85,8 @@ private[spark] class BlockManager(
     new DiskBlockManager(conf, deleteFilesOnStop)
   }
 
+  val chronicleMapManager: ChronicleMapManager = new ChronicleMapManager(conf, true)
+
   // Visible for testing
   private[storage] val blockInfoManager = new BlockInfoManager
 
@@ -96,6 +98,8 @@ private[spark] class BlockManager(
     new MemoryStore(conf, blockInfoManager, serializerManager, memoryManager, this)
   private[spark] val diskStore = new DiskStore(conf, diskBlockManager)
   memoryManager.setMemoryStore(memoryStore)
+  private[spark] val chronicleMapStore =
+    new ChronicleMapStore(chronicleMapManager, serializerManager)
 
   // Note: depending on the memory manager, `maxMemory` may actually vary over time.
   // However, since we use this only for reporting and logging, what we actually want here is
@@ -336,7 +340,10 @@ private[spark] class BlockManager(
    */
   def getStatus(blockId: BlockId): Option[BlockStatus] = {
     blockInfoManager.get(blockId).map { info =>
-      val memSize = if (memoryStore.contains(blockId)) memoryStore.getSize(blockId) else 0L
+      val memSize =
+        if (memoryStore.contains(blockId)) memoryStore.getSize(blockId)
+        else if (chronicleMapStore.contains(blockId)) chronicleMapStore.getSize(blockId)
+        else 0L
       val diskSize = if (diskStore.contains(blockId)) diskStore.getSize(blockId) else 0L
       BlockStatus(info.level, memSize = memSize, diskSize = diskSize)
     }
@@ -404,7 +411,8 @@ private[spark] class BlockManager(
         case null =>
           BlockStatus.empty
         case level =>
-          val inMem = level.useMemory && memoryStore.contains(blockId)
+          val inMem = level.useMemory &&
+            (memoryStore.contains(blockId) || chronicleMapStore.contains(blockId))
           val onDisk = level.useDisk && diskStore.contains(blockId)
           val deserialized = if (inMem) level.deserialized else false
           val replication = if (inMem  || onDisk) level.replication else 1
@@ -414,7 +422,10 @@ private[spark] class BlockManager(
             useOffHeap = level.useOffHeap,
             deserialized = deserialized,
             replication = replication)
-          val memSize = if (inMem) memoryStore.getSize(blockId) else 0L
+          val memSize =
+            if (inMem && deserialized && level.useOffHeap) chronicleMapStore.getSize(blockId)
+            else if (inMem) memoryStore.getSize(blockId)
+            else 0L
           val diskSize = if (onDisk) diskStore.getSize(blockId) else 0L
           BlockStatus(storageLevel, memSize, diskSize)
       }
@@ -461,6 +472,10 @@ private[spark] class BlockManager(
             serializerManager.dataDeserializeStream(
               blockId, memoryStore.getBytes(blockId).get.toInputStream())(info.classTag)
           }
+          val ci = CompletionIterator[Any, Iterator[Any]](iter, releaseLock(blockId))
+          Some(new BlockResult(ci, DataReadMethod.Memory, info.size))
+        } else if (level.useMemory && chronicleMapStore.contains(blockId)) {
+          val iter = chronicleMapStore.getValues(blockId, info.classTag)
           val ci = CompletionIterator[Any, Iterator[Any]](iter, releaseLock(blockId))
           Some(new BlockResult(ci, DataReadMethod.Memory, info.size))
         } else if (level.useDisk && diskStore.contains(blockId)) {
@@ -528,6 +543,13 @@ private[spark] class BlockManager(
         // The block was not found on disk, so serialize an in-memory copy:
         serializerManager.dataSerializeWithExplicitClassTag(
           blockId, memoryStore.getValues(blockId).get, info.classTag)
+      } else if (level.useMemory && chronicleMapStore.contains(blockId)) {
+        // get values and serialize as normal data
+        serializerManager.dataSerializeWithExplicitClassTag(
+          blockId, chronicleMapStore.getValues(blockId, info.classTag), info.classTag)
+
+        // OR directly load chronicle map data, which cannot be used through serializer
+        // chronicleMapStore.getBytes(blockId)
       } else {
         handleLocalReadFailure(blockId)
       }
@@ -844,14 +866,22 @@ private[spark] class BlockManager(
         val putSucceeded = if (level.deserialized) {
           val values =
             serializerManager.dataDeserializeStream(blockId, bytes.toInputStream())(classTag)
-          memoryStore.putIteratorAsValues(blockId, values, classTag) match {
-            case Right(_) => true
-            case Left(iter) =>
-              // If putting deserialized values in memory failed, we will put the bytes directly to
-              // disk, so we don't need this iterator and can close it to free resources earlier.
-              iter.close()
-              false
+          if (level.useOffHeap) {
+            chronicleMapStore.putIteratorAsValues(blockId, values, classTag) match {
+              case Right(_) => true
+              case Left(_) => false
+            }
+          } else {
+            memoryStore.putIteratorAsValues(blockId, values, classTag) match {
+              case Right(_) => true
+              case Left(iter) =>
+                // If putting deserialized values in memory failed we will put the bytes directly to
+                // disk, so we don't need this iterator and can close it to free resources earlier.
+                iter.close()
+                false
+            }
           }
+
         } else {
           val memoryMode = level.memoryMode
           memoryStore.putBytes(blockId, size, memoryMode, () => {
@@ -1001,7 +1031,19 @@ private[spark] class BlockManager(
       if (level.useMemory) {
         // Put it in memory first, even if it also has useDisk set to true;
         // We will drop it to disk later if the memory store can't hold it.
-        if (level.deserialized) {
+        if (level.useOffHeap && level.deserialized) {
+          chronicleMapStore.putIteratorAsValues(blockId, iterator(), classTag) match {
+            case Right(s) =>
+              size = s
+            case Left(iter) =>
+              // Not enough space to unroll this block; drop to disk if applicable
+              logWarning(s"Persisting block $blockId to disk instead.")
+              diskStore.put(blockId) { fileOutputStream =>
+                serializerManager.dataSerializeStream(blockId, fileOutputStream, iter)(classTag)
+              }
+              size = diskStore.getSize(blockId)
+          }
+        } else if (level.deserialized) {
           memoryStore.putIteratorAsValues(blockId, iterator(), classTag) match {
             case Right(s) =>
               size = s
@@ -1138,7 +1180,7 @@ private[spark] class BlockManager(
       diskIterator: Iterator[T]): Iterator[T] = {
     require(level.deserialized)
     val classTag = blockInfo.classTag.asInstanceOf[ClassTag[T]]
-    if (level.useMemory) {
+    if (level.useMemory && !level.useOffHeap) {
       // Synchronize on blockInfo to guard against a race condition where two readers both try to
       // put values read from disk into the MemoryStore.
       blockInfo.synchronized {
@@ -1385,7 +1427,8 @@ private[spark] class BlockManager(
     // Removals are idempotent in disk store and memory store. At worst, we get a warning.
     val removedFromMemory = memoryStore.remove(blockId)
     val removedFromDisk = diskStore.remove(blockId)
-    if (!removedFromMemory && !removedFromDisk) {
+    val removedFromKV = chronicleMapStore.remove(blockId)
+    if (!removedFromMemory && !removedFromDisk && !removedFromKV) {
       logWarning(s"Block $blockId could not be removed as it was not found on disk or in memory")
     }
     blockInfoManager.removeBlock(blockId)
@@ -1410,6 +1453,7 @@ private[spark] class BlockManager(
     rpcEnv.stop(slaveEndpoint)
     blockInfoManager.clear()
     memoryStore.clear()
+    chronicleMapStore.clear()
     futureExecutionContext.shutdownNow()
     logInfo("BlockManager stopped")
   }
