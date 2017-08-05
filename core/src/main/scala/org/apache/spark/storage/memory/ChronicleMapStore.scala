@@ -17,15 +17,13 @@
 
 package org.apache.spark.storage.memory
 
-import java.nio.ByteBuffer
-
 import scala.collection.JavaConverters._
 import scala.collection.mutable
 import scala.reflect.ClassTag
 
-import net.openhft.chronicle.bytes.{Bytes, BytesMarshallable}
+import net.openhft.chronicle.bytes.Bytes
 import net.openhft.chronicle.core.values.IntValue
-import net.openhft.chronicle.hash.serialization.{BytesReader, BytesWriter}
+import net.openhft.chronicle.hash.serialization._
 import net.openhft.chronicle.map.ChronicleMap
 import net.openhft.chronicle.values.Values
 
@@ -42,7 +40,28 @@ private[spark] class ChronicleMapStore(
     val serializerManager: SerializerManager)
   extends Logging {
 
-  private[this] val blocks = new mutable.HashMap[BlockId, ChronicleMap[IntValue, Any]]
+  private[this] val blocks =
+    new mutable.HashMap[BlockId, mutable.HashMap[String, ChronicleMap[Any, Any]]]
+
+  def getKVBlock(blockId: BlockId): Option[ChronicleMap[Any, Any]] = {
+    blocks.get(blockId).flatMap(_.get("block"))
+  }
+
+  def getKVIndex(blockId: BlockId, name: String): Option[ChronicleMap[Any, Any]] = {
+    blocks.get(blockId).flatMap(_.get(name))
+  }
+
+  def putKVIndex(blockId: BlockId, name: String, index: ChronicleMap[Any, Any]): Boolean = {
+    if (blocks.contains(blockId)) {
+      blocks(blockId).put(name, index)
+      true
+    }
+    else false
+  }
+
+  def getKVIndexPath(blockId: BlockId, name: String): String = {
+    manager.getIndexFile(blockId, name).getPath
+  }
 
   def getValues[T](blockId: BlockId,
                    classTag: ClassTag[T]): Iterator[Any] = {
@@ -50,7 +69,7 @@ private[spark] class ChronicleMapStore(
       logError( s"block ${blockId.name} dose not exist on this executor.")
       return Iterator[Any]()
     }
-    val map = blocks(blockId)
+    val map = blocks(blockId)("block")
     map.values().iterator().asScala
   }
 
@@ -58,20 +77,26 @@ private[spark] class ChronicleMapStore(
       blockId: BlockId,
       values: Iterator[T],
       classTag: ClassTag[T]): Either[Iterator[T], Long] = {
-    var map: ChronicleMap[IntValue, Any] = null
+    var map: ChronicleMap[Any, Any] = null
     var seq: Seq[T] = null
     try {
       // since we need to check the size, the iterator is firstly changed to a Seq
       seq = values.toSeq
-      map = createChronicleMap(blockId, seq, classTag)
-      blocks.put(blockId, map)
+      map = createChronicleMap(blockId, seq, classTag).asInstanceOf[ChronicleMap[Any, Any]]
+      if (blocks.contains(blockId)) blocks(blockId).put("block", map)
+      else {
+        val newMap = mutable.HashMap[String, ChronicleMap[Any, Any]](("block", map))
+        blocks.put(blockId, newMap)
+      }
       val size = getSize(blockId)
       Right(size)
     } catch {
       case e: Exception =>
-        e.printStackTrace()
-        if (map != null) map.close()
-        manager.removeBlock(blockId)
+        logError("Fail to put values into KV:\n" + e.getStackTrace.mkString("\n"))
+        if (map != null) {
+          map.close()
+          remove(blockId)
+        }
         if (seq != null) Left(seq.iterator)
         else Left(values)
     }
@@ -82,14 +107,29 @@ private[spark] class ChronicleMapStore(
       values: Seq[T],
       classTag: ClassTag[T]): ChronicleMap[IntValue, Any] = {
 
-    val file = manager.getFile(blockId.name)
+    val file = manager.getFile(blockId)
+    val clazz = classTag.runtimeClass.asInstanceOf[Class[T]]
     val builder = ChronicleMap
-      .of(classOf[IntValue], classTag.runtimeClass.asInstanceOf[Class[T]])
+      .of(classOf[IntValue], clazz)
       .averageValue(values.head)
       .entries(values.size)
     val map =
-      if (serializable(classTag)) builder.createPersistedTo(file)
-      else {
+      if (classOf[Marshallable].isAssignableFrom(clazz)) {
+        val instance = values.head.asInstanceOf[Marshallable]
+        if (instance.getSizedReader != null) {
+          val reader = instance.getSizedReader.asInstanceOf[SizedReader[T]]
+          val writer = instance.getSizedWriter.asInstanceOf[SizedWriter[T]]
+          builder.valueMarshallers(reader, writer)
+        } else {
+          val reader = instance.getBytesReader.asInstanceOf[BytesReader[T]]
+          val writer = instance.getBytesWriter.asInstanceOf[BytesWriter[T]]
+          builder.valueMarshallers(reader, writer)
+        }
+        if (instance.getSizeMarshaller != null) {
+          builder.valueSizeMarshaller(instance.getSizeMarshaller)
+        }
+        builder.createPersistedTo(file)
+      } else {
         val serializer = serializerManager.getSerializer(classTag, autoPick = true).newInstance()
         val marshaller = new SerializerMarshaller[T](serializer)(classTag)
         builder.valueMarshaller(marshaller).createPersistedTo(file)
@@ -105,24 +145,17 @@ private[spark] class ChronicleMapStore(
 
   }
 
-  def serializable[T](classTag: ClassTag[T]): Boolean = {
-    val clazz = classTag.runtimeClass
-    if (clazz == classOf[Array[Byte]] || classOf[ByteBuffer].isAssignableFrom(clazz)) true
-    else {
-      val interfaces = clazz.getInterfaces
-      interfaces.contains(classOf[BytesMarshallable])
-    }
-  }
-
   def getSize(blockId: BlockId): Long = {
     manager.getFile(blockId.name).length
   }
 
   def remove(blockId: BlockId): Boolean = {
+    var indexNames = Iterable[String]()
     if (blocks.contains(blockId)) {
-      blocks(blockId).close()
+      indexNames = blocks(blockId).keys
+      blocks(blockId).values.foreach(_.close())
     }
-    manager.removeBlock(blockId)
+    manager.removeBlockWithIndexes(blockId, indexNames)
   }
 
   def contains(blockId: BlockId): Boolean = {
@@ -131,10 +164,7 @@ private[spark] class ChronicleMapStore(
   }
 
   def clear(): Unit = {
-    blocks.foreach(kv => {
-      kv._2.close()
-      manager.removeBlock(kv._1)
-    })
+    blocks.keys.foreach(block => remove(block))
   }
 }
 

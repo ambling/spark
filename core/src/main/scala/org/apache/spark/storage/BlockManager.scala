@@ -29,6 +29,7 @@ import scala.util.Random
 import scala.util.control.NonFatal
 
 import com.google.common.io.ByteStreams
+import net.openhft.chronicle.map.ChronicleMap
 
 import org.apache.spark._
 import org.apache.spark.executor.{DataReadMethod, ShuffleWriteMetrics}
@@ -1377,6 +1378,22 @@ private[spark] class BlockManager(
       addUpdatedBlockStatusToTaskMetrics(blockId, status)
     }
     status.storageLevel
+  }
+
+  def getKVBlock(blockId: BlockId): Option[ChronicleMap[Any, Any]] = {
+    chronicleMapStore.getKVBlock(blockId)
+  }
+
+  def putKVIndex(blockId: BlockId, name: String, kv: ChronicleMap[Any, Any]): Boolean = {
+    chronicleMapStore.putKVIndex(blockId, name, kv)
+  }
+
+  def getKVIndex(blockId: BlockId, name: String): Option[ChronicleMap[Any, Any]] = {
+    chronicleMapStore.getKVIndex(blockId, name)
+  }
+
+  def getKVIndexPath(blockId: BlockId, name: String): String = {
+    chronicleMapStore.getKVIndexPath(blockId, name)
   }
 
   /**
