@@ -40,23 +40,10 @@ private[spark] class ChronicleMapStore(
     val serializerManager: SerializerManager)
   extends Logging {
 
-  private[this] val blocks =
-    new mutable.HashMap[BlockId, mutable.HashMap[String, ChronicleMap[Any, Any]]]
+  private[this] val blocks = new mutable.HashMap[BlockId, ChronicleMap[Any, Any]]
 
   def getKVBlock(blockId: BlockId): Option[ChronicleMap[Any, Any]] = {
-    blocks.get(blockId).flatMap(_.get("block"))
-  }
-
-  def getKVIndex(blockId: BlockId, name: String): Option[ChronicleMap[Any, Any]] = {
-    blocks.get(blockId).flatMap(_.get(name))
-  }
-
-  def putKVIndex(blockId: BlockId, name: String, index: ChronicleMap[Any, Any]): Boolean = {
-    if (blocks.contains(blockId)) {
-      blocks(blockId).put(name, index)
-      true
-    }
-    else false
+    blocks.get(blockId)
   }
 
   def getKVIndexPath(blockId: BlockId, name: String): String = {
@@ -69,7 +56,7 @@ private[spark] class ChronicleMapStore(
       logError( s"block ${blockId.name} dose not exist on this executor.")
       return Iterator[Any]()
     }
-    val map = blocks(blockId)("block")
+    val map = blocks(blockId)
     map.values().iterator().asScala
   }
 
@@ -82,12 +69,9 @@ private[spark] class ChronicleMapStore(
     try {
       // since we need to check the size, the iterator is firstly changed to a Seq
       seq = values.toSeq
+      if (blocks.contains(blockId)) blocks(blockId).close() // close old before create new map
       map = createChronicleMap(blockId, seq, classTag).asInstanceOf[ChronicleMap[Any, Any]]
-      if (blocks.contains(blockId)) blocks(blockId).put("block", map)
-      else {
-        val newMap = mutable.HashMap[String, ChronicleMap[Any, Any]](("block", map))
-        blocks.put(blockId, newMap)
-      }
+      blocks.put(blockId, map)
       val size = getSize(blockId)
       Right(size)
     } catch {
@@ -108,6 +92,7 @@ private[spark] class ChronicleMapStore(
       classTag: ClassTag[T]): ChronicleMap[IntValue, Any] = {
 
     val file = manager.getFile(blockId)
+    if (file.exists()) file.delete()
     val clazz = classTag.runtimeClass.asInstanceOf[Class[T]]
     val builder = ChronicleMap
       .of(classOf[IntValue], clazz)
@@ -150,12 +135,10 @@ private[spark] class ChronicleMapStore(
   }
 
   def remove(blockId: BlockId): Boolean = {
-    var indexNames = Iterable[String]()
     if (blocks.contains(blockId)) {
-      indexNames = blocks(blockId).keys
-      blocks(blockId).values.foreach(_.close())
+      blocks(blockId).close()
     }
-    manager.removeBlockWithIndexes(blockId, indexNames)
+    manager.removeBlock(blockId)
   }
 
   def contains(blockId: BlockId): Boolean = {

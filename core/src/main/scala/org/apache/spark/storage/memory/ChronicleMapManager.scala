@@ -53,15 +53,6 @@ private[spark] class ChronicleMapManager(
     removeFile(file)
   }
 
-  def removeBlockWithIndexes(blockId: BlockId, names: Iterable[String]): Boolean = {
-    names.foreach { name =>
-      val file = getIndexFile(blockId, name)
-      removeFile(file)
-    }
-    val file = getFile(blockId)
-    removeFile(file)
-  }
-
   def getIndexFile(blockId: BlockId, name: String): File = {
     getFile(blockId.name + "_" + name)
   }

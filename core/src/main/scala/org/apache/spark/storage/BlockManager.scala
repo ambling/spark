@@ -44,6 +44,7 @@ import org.apache.spark.rpc.RpcEnv
 import org.apache.spark.security.CryptoStreamUtils
 import org.apache.spark.serializer.{SerializerInstance, SerializerManager}
 import org.apache.spark.shuffle.ShuffleManager
+import org.apache.spark.storage.indexing.{BlockIndex, IndexManager}
 import org.apache.spark.storage.memory._
 import org.apache.spark.unsafe.Platform
 import org.apache.spark.util._
@@ -90,6 +91,8 @@ private[spark] class BlockManager(
 
   // Visible for testing
   private[storage] val blockInfoManager = new BlockInfoManager
+
+  private[storage] val indexManager = new IndexManager
 
   private val futureExecutionContext = ExecutionContext.fromExecutorService(
     ThreadUtils.newDaemonCachedThreadPool("block-manager-future", 128))
@@ -1380,16 +1383,29 @@ private[spark] class BlockManager(
     status.storageLevel
   }
 
-  def getKVBlock(blockId: BlockId): Option[ChronicleMap[Any, Any]] = {
-    chronicleMapStore.getKVBlock(blockId)
+  def getRandomAccessedBlock(
+      blockId: BlockId): Option[Either[Array[Any], ChronicleMap[Any, Any]]] = {
+
+    val blockInfo = blockInfoManager.get(blockId)
+    blockInfo match {
+      case Some(info) =>
+        val level = info.level
+        if (level.useMemory && level.deserialized) {
+          if (level.useOffHeap) chronicleMapStore.getKVBlock(blockId).map(Right(_))
+          else memoryStore.getValuesArray(blockId).map(a => Left(a.asInstanceOf[Array[Any]]))
+        } else {
+          None
+        }
+      case None => None
+    }
   }
 
-  def putKVIndex(blockId: BlockId, name: String, kv: ChronicleMap[Any, Any]): Boolean = {
-    chronicleMapStore.putKVIndex(blockId, name, kv)
+  def putBlockIndex(blockId: BlockId, name: String, index: BlockIndex): Unit = {
+    indexManager.putIndex(blockId, name, index)
   }
 
-  def getKVIndex(blockId: BlockId, name: String): Option[ChronicleMap[Any, Any]] = {
-    chronicleMapStore.getKVIndex(blockId, name)
+  def getBlockIndex(blockId: BlockId, name: String): Option[BlockIndex] = {
+    indexManager.getIndex(blockId, name)
   }
 
   def getKVIndexPath(blockId: BlockId, name: String): String = {
@@ -1448,6 +1464,7 @@ private[spark] class BlockManager(
     if (!removedFromMemory && !removedFromDisk && !removedFromKV) {
       logWarning(s"Block $blockId could not be removed as it was not found on disk or in memory")
     }
+    indexManager.removeBlock(blockId)
     blockInfoManager.removeBlock(blockId)
     if (tellMaster) {
       reportBlockStatus(blockId, BlockStatus.empty)

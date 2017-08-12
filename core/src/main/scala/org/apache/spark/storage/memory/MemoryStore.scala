@@ -416,16 +416,19 @@ private[spark] class MemoryStore(
     }
   }
 
-  def getValues(blockId: BlockId): Option[Iterator[_]] = {
+  def getValuesArray(blockId: BlockId): Option[Array[_]] = {
     val entry = entries.synchronized { entries.get(blockId) }
     entry match {
       case null => None
       case e: SerializedMemoryEntry[_] =>
         throw new IllegalArgumentException("should only call getValues on deserialized blocks")
       case DeserializedMemoryEntry(values, _, _) =>
-        val x = Some(values)
-        x.map(_.iterator)
+        Some(values)
     }
+  }
+
+  def getValues(blockId: BlockId): Option[Iterator[_]] = {
+    getValuesArray(blockId).map(_.iterator)
   }
 
   def remove(blockId: BlockId): Boolean = memoryManager.synchronized {
