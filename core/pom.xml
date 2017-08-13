@@ -26,6 +26,7 @@
   </parent>
 
   <artifactId>spark-core_2.11</artifactId>
+  <version>2.1.1-randomaccess</version>
   <properties>
     <sbt.project.name>core</sbt.project.name>
   </properties>
@@ -61,22 +62,22 @@
     <dependency>
       <groupId>org.apache.spark</groupId>
       <artifactId>spark-launcher_${scala.binary.version}</artifactId>
-      <version>${project.version}</version>
+      <version>${parent.version}</version>
     </dependency>
     <dependency>
       <groupId>org.apache.spark</groupId>
       <artifactId>spark-network-common_${scala.binary.version}</artifactId>
-      <version>${project.version}</version>
+      <version>${parent.version}</version>
     </dependency>
     <dependency>
       <groupId>org.apache.spark</groupId>
       <artifactId>spark-network-shuffle_${scala.binary.version}</artifactId>
-      <version>${project.version}</version>
+      <version>${parent.version}</version>
     </dependency>
     <dependency>
       <groupId>org.apache.spark</groupId>
       <artifactId>spark-unsafe_${scala.binary.version}</artifactId>
-      <version>${project.version}</version>
+      <version>${parent.version}</version>
     </dependency>
     <dependency>
       <groupId>net.java.dev.jets3t</groupId>
@@ -342,6 +343,7 @@
     <dependency>
       <groupId>org.apache.spark</groupId>
       <artifactId>spark-tags_${scala.binary.version}</artifactId>
+      <version>${parent.version}</version>
     </dependency>
 
     <!--
@@ -351,6 +353,7 @@
     <dependency>
       <groupId>org.apache.spark</groupId>
       <artifactId>spark-tags_${scala.binary.version}</artifactId>
+      <version>${parent.version}</version>
       <type>test-jar</type>
       <scope>test</scope>
     </dependency>
