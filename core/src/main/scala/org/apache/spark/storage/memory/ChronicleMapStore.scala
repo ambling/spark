@@ -96,11 +96,14 @@ private[spark] class ChronicleMapStore(
     val clazz = classTag.runtimeClass.asInstanceOf[Class[T]]
     val builder = ChronicleMap
       .of(classOf[IntValue], clazz)
-      .averageValue(values.head)
       .entries(values.size)
     val map =
       if (classOf[Marshallable].isAssignableFrom(clazz)) {
         val instance = values.head.asInstanceOf[Marshallable]
+        val comparator = instance.getSizeComparator
+        val sorted = values.asInstanceOf[Seq[Marshallable]]
+          .sorted(Ordering.comparatorToOrdering(comparator).reverse)
+        builder.averageValue(sorted.head.asInstanceOf[T])
         if (instance.getSizedReader != null) {
           val reader = instance.getSizedReader.asInstanceOf[SizedReader[T]]
           val writer = instance.getSizedWriter.asInstanceOf[SizedWriter[T]]
@@ -117,7 +120,10 @@ private[spark] class ChronicleMapStore(
       } else {
         val serializer = serializerManager.getSerializer(classTag, autoPick = true).newInstance()
         val marshaller = new SerializerMarshaller[T](serializer)(classTag)
-        builder.valueMarshaller(marshaller).createPersistedTo(file)
+        builder
+          .averageValue(values.head)
+          .valueMarshaller(marshaller)
+          .createPersistedTo(file)
       }
 
     val k = Values.newHeapInstance(classOf[IntValue])

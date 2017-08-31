@@ -17,6 +17,8 @@
 
 package org.apache.spark.storage.memory
 
+import java.util.Comparator
+
 import net.openhft.chronicle.hash.serialization._
 
 /**
@@ -35,4 +37,6 @@ trait Marshallable {
   def getBytesWriter: BytesWriter[Any]
 
   def getSizeMarshaller: SizeMarshaller
+
+  def getSizeComparator: Comparator[Marshallable]
 }
