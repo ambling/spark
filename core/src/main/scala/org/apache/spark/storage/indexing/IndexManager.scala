@@ -17,6 +17,7 @@
 
 package org.apache.spark.storage.indexing
 
+import java.util.concurrent.ConcurrentHashMap
 import javax.annotation.concurrent.GuardedBy
 
 import scala.collection.mutable
@@ -28,21 +29,24 @@ import org.apache.spark.storage.BlockId
 private[spark] class IndexManager extends Logging {
 
   @GuardedBy("this")
-  private[this] val indexes = new mutable.HashMap[BlockId, mutable.HashMap[String, BlockIndex]]
+  private[this] val indexes = new ConcurrentHashMap[BlockId, mutable.HashMap[String, BlockIndex]]
 
   def getIndex(blockId: BlockId, name: String): Option[BlockIndex] = {
-    indexes.get(blockId).flatMap(_.get(name))
+    val map = indexes.get(blockId)
+    if (map != null) map.get(name)
+    else None
   }
 
   def putIndex(blockId: BlockId, name: String, index: BlockIndex): Unit = {
-    val indexMap = indexes.getOrElse(blockId, new mutable.HashMap[String, BlockIndex]())
+    val indexMap = indexes.getOrDefault(blockId, new mutable.HashMap[String, BlockIndex]())
     val oldIndex = indexMap.put(name, index)
     if (oldIndex.isDefined) oldIndex.get.close()
     indexes.put(blockId, indexMap)
   }
 
   def removeIndex(blockId: BlockId, name: String): Boolean = {
-    indexes.get(blockId).forall { map =>
+    val map = indexes.get(blockId)
+    if (map != null) {
       val index = map.remove(name)
       index match {
         case Some(idx) =>
@@ -51,17 +55,13 @@ private[spark] class IndexManager extends Logging {
         case None =>
           false
       }
-    }
+    } else false
   }
 
   def removeBlock(blockId: BlockId): Unit = {
-    val indexMap = indexes.remove(blockId)
-    indexMap match {
-      case Some(map) =>
-        map.values.foreach(_.close())
-        true
-      case None =>
-        false
+    val map = indexes.remove(blockId)
+    if (map != null) {
+      map.values.foreach(_.close())
     }
   }
 }
