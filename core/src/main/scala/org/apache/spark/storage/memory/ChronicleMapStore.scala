@@ -17,6 +17,8 @@
 
 package org.apache.spark.storage.memory
 
+import java.io.IOException
+
 import scala.collection.JavaConverters._
 import scala.collection.mutable
 import scala.reflect.ClassTag
@@ -29,7 +31,7 @@ import net.openhft.chronicle.values.Values
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.serializer.{SerializerInstance, SerializerManager}
-import org.apache.spark.storage.BlockId
+import org.apache.spark.storage.{BlockId, DiskBlockManager}
 
 /**
  *
@@ -37,6 +39,7 @@ import org.apache.spark.storage.BlockId
  */
 private[spark] class ChronicleMapStore(
     val manager: ChronicleMapManager,
+    val diskManager: DiskBlockManager,
     val serializerManager: SerializerManager)
   extends Logging {
 
@@ -46,8 +49,14 @@ private[spark] class ChronicleMapStore(
     blocks.get(blockId)
   }
 
-  def getKVIndexPath(blockId: BlockId, name: String): String = {
-    manager.getIndexFile(blockId, name).getPath
+  /**
+   * Since the map creation is called by user,
+   * this method provides a path on disk in case the memory is not enouph.
+   * @return (InMemPath, OnDiskPath)
+   */
+  def getKVIndexPath(blockId: BlockId, name: String): (String, String) = {
+    (manager.getIndexFile(blockId, name).getPath,
+      diskManager.getFile(blockId.name + "_" + name).getPath)
   }
 
   def getValues[T](blockId: BlockId,
@@ -64,26 +73,15 @@ private[spark] class ChronicleMapStore(
       blockId: BlockId,
       values: Iterator[T],
       classTag: ClassTag[T]): Either[Iterator[T], Long] = {
-    var map: ChronicleMap[Any, Any] = null
-    var seq: Seq[T] = null
-    try {
-      // since we need to check the size, the iterator is firstly changed to a Seq
-      seq = values.toSeq
-      if (blocks.contains(blockId)) blocks(blockId).close() // close old before create new map
-      map = createChronicleMap(blockId, seq, classTag).asInstanceOf[ChronicleMap[Any, Any]]
-      blocks.put(blockId, map)
-      val size = getSize(blockId)
-      Right(size)
-    } catch {
-      case e: Exception =>
-        logError("Fail to put values into KV:\n" + e.getStackTrace.mkString("\n"))
-        if (map != null) {
-          map.close()
-          remove(blockId)
-        }
-        if (seq != null) Left(seq.iterator)
-        else Left(values)
-    }
+    // this method will always return a Right(Long) because we handle the case in map creation.
+    // since we need to check the size, the iterator is firstly changed to a Seq.
+    val seq = values.toSeq
+    if (blocks.contains(blockId)) blocks(blockId).close() // close old before create new map
+    val map = createChronicleMap(blockId, seq, classTag).asInstanceOf[ChronicleMap[Any, Any]]
+    blocks.put(blockId, map)
+    val size = getMapSize(blockId)
+    Right(size)
+
   }
 
   def createChronicleMap[T](
@@ -93,37 +91,47 @@ private[spark] class ChronicleMapStore(
 
     val file = manager.getFile(blockId)
     if (file.exists()) file.delete()
+
+    val diskFile = diskManager.getFile(blockId)
+    if (diskFile.exists()) diskFile.delete()
+
     val clazz = classTag.runtimeClass.asInstanceOf[Class[T]]
     val builder = ChronicleMap
       .of(classOf[IntValue], clazz)
       .entries(values.size)
-    val map =
-      if (classOf[Marshallable].isAssignableFrom(clazz)) {
-        val instance = values.head.asInstanceOf[Marshallable]
-        val comparator = instance.getSizeComparator
-        val sorted = values.asInstanceOf[Seq[Marshallable]]
-          .sorted(Ordering.comparatorToOrdering(comparator).reverse)
-        builder.averageValue(sorted.head.asInstanceOf[T])
-        if (instance.getSizedReader != null) {
-          val reader = instance.getSizedReader.asInstanceOf[SizedReader[T]]
-          val writer = instance.getSizedWriter.asInstanceOf[SizedWriter[T]]
-          builder.valueMarshallers(reader, writer)
-        } else {
-          val reader = instance.getBytesReader.asInstanceOf[BytesReader[T]]
-          val writer = instance.getBytesWriter.asInstanceOf[BytesWriter[T]]
-          builder.valueMarshallers(reader, writer)
-        }
-        if (instance.getSizeMarshaller != null) {
-          builder.valueSizeMarshaller(instance.getSizeMarshaller)
-        }
-        builder.createPersistedTo(file)
+
+    if (classOf[Marshallable].isAssignableFrom(clazz)) {
+      val instance = values.head.asInstanceOf[Marshallable]
+      val comparator = instance.getSizeComparator
+      val sorted = values.asInstanceOf[Seq[Marshallable]]
+        .sorted(Ordering.comparatorToOrdering(comparator).reverse)
+      builder.averageValue(sorted.head.asInstanceOf[T])
+      if (instance.getSizedReader != null) {
+        val reader = instance.getSizedReader.asInstanceOf[SizedReader[T]]
+        val writer = instance.getSizedWriter.asInstanceOf[SizedWriter[T]]
+        builder.valueMarshallers(reader, writer)
       } else {
-        val serializer = serializerManager.getSerializer(classTag, autoPick = true).newInstance()
-        val marshaller = new SerializerMarshaller[T](serializer)(classTag)
-        builder
-          .averageValue(values.head)
-          .valueMarshaller(marshaller)
-          .createPersistedTo(file)
+        val reader = instance.getBytesReader.asInstanceOf[BytesReader[T]]
+        val writer = instance.getBytesWriter.asInstanceOf[BytesWriter[T]]
+        builder.valueMarshallers(reader, writer)
+      }
+      if (instance.getSizeMarshaller != null) {
+        builder.valueSizeMarshaller(instance.getSizeMarshaller)
+      }
+    } else {
+      val serializer = serializerManager.getSerializer(classTag, autoPick = true).newInstance()
+      val marshaller = new SerializerMarshaller[T](serializer)(classTag)
+      builder
+        .averageValue(values.head)
+        .valueMarshaller(marshaller)
+    }
+
+    val map =
+      try {
+        builder.createPersistedTo(file)
+      } catch {
+        case e: IOException =>
+          builder.createPersistedTo(diskFile)
       }
 
     val k = Values.newHeapInstance(classOf[IntValue])
@@ -136,20 +144,33 @@ private[spark] class ChronicleMapStore(
 
   }
 
+  /**
+   * Returns the data size in memory.
+   * @param blockId
+   */
   def getSize(blockId: BlockId): Long = {
     manager.getFile(blockId.name).length
+  }
+
+  /**
+   * Returns the data size of this chroniclemap, can be in memory or on disk.
+   */
+  def getMapSize(blockId: BlockId): Long = {
+    if (manager.containsBlock(blockId)) manager.getFile(blockId.name).length
+    else if (diskManager.containsBlock(blockId)) diskManager.getFile(blockId).length()
+    else 0L
   }
 
   def remove(blockId: BlockId): Boolean = {
     if (blocks.contains(blockId)) {
       blocks(blockId).close()
     }
-    manager.removeBlock(blockId)
+    manager.removeBlock(blockId) ||
+      (diskManager.containsBlock(blockId) && diskManager.getFile(blockId).delete())
   }
 
   def contains(blockId: BlockId): Boolean = {
-    val file = manager.getFile(blockId.name)
-    file.exists()
+    blocks.contains(blockId)
   }
 
   def clear(): Unit = {

@@ -103,7 +103,7 @@ private[spark] class BlockManager(
   private[spark] val diskStore = new DiskStore(conf, diskBlockManager)
   memoryManager.setMemoryStore(memoryStore)
   private[spark] val chronicleMapStore =
-    new ChronicleMapStore(chronicleMapManager, serializerManager)
+    new ChronicleMapStore(chronicleMapManager, diskBlockManager, serializerManager)
 
   // Note: depending on the memory manager, `maxMemory` may actually vary over time.
   // However, since we use this only for reporting and logging, what we actually want here is
@@ -1408,7 +1408,7 @@ private[spark] class BlockManager(
     indexManager.getIndex(blockId, name)
   }
 
-  def getKVIndexPath(blockId: BlockId, name: String): String = {
+  def getKVIndexPath(blockId: BlockId, name: String): (String, String) = {
     chronicleMapStore.getKVIndexPath(blockId, name)
   }
 
