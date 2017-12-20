@@ -871,7 +871,7 @@ private[spark] class BlockManager(
           val values =
             serializerManager.dataDeserializeStream(blockId, bytes.toInputStream())(classTag)
           if (level.useOffHeap) {
-            chronicleMapStore.putIteratorAsValues(blockId, values, classTag) match {
+            chronicleMapStore.putIteratorAsValues(blockId, level.useDisk, values, classTag) match {
               case Right(_) => true
               case Left(_) => false
             }
@@ -1036,7 +1036,8 @@ private[spark] class BlockManager(
         // Put it in memory first, even if it also has useDisk set to true;
         // We will drop it to disk later if the memory store can't hold it.
         if (level.useOffHeap && level.deserialized) {
-          chronicleMapStore.putIteratorAsValues(blockId, iterator(), classTag) match {
+          chronicleMapStore
+            .putIteratorAsValues(blockId, level.useDisk, iterator(), classTag) match {
             case Right(s) =>
               size = s
             case Left(iter) =>

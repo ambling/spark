@@ -71,13 +71,15 @@ private[spark] class ChronicleMapStore(
 
   def putIteratorAsValues[T](
       blockId: BlockId,
+      onDisk: Boolean,
       values: Iterator[T],
       classTag: ClassTag[T]): Either[Iterator[T], Long] = {
     // this method will always return a Right(Long) because we handle the case in map creation.
     // since we need to check the size, the iterator is firstly changed to a Seq.
     val seq = values.toSeq
     if (blocks.contains(blockId)) blocks(blockId).close() // close old before create new map
-    val map = createChronicleMap(blockId, seq, classTag).asInstanceOf[ChronicleMap[Any, Any]]
+    val map = createChronicleMap(blockId, onDisk, seq, classTag)
+      .asInstanceOf[ChronicleMap[Any, Any]]
     blocks.put(blockId, map)
     val size = getMapSize(blockId)
     Right(size)
@@ -86,6 +88,7 @@ private[spark] class ChronicleMapStore(
 
   def createChronicleMap[T](
       blockId: BlockId,
+      onDisk: Boolean,
       values: Seq[T],
       classTag: ClassTag[T]): ChronicleMap[IntValue, Any] = {
 
@@ -126,13 +129,15 @@ private[spark] class ChronicleMapStore(
         .valueMarshaller(marshaller)
     }
 
-    val map =
+    val map = if (onDisk) builder.createPersistedTo(diskFile) else {
       try {
         builder.createPersistedTo(file)
       } catch {
         case e: IOException =>
           builder.createPersistedTo(diskFile)
       }
+    }
+
 
     val k = Values.newHeapInstance(classOf[IntValue])
     k.setValue(0)
@@ -149,7 +154,13 @@ private[spark] class ChronicleMapStore(
    * @param blockId
    */
   def getSize(blockId: BlockId): Long = {
-    manager.getFile(blockId.name).length
+    if (manager.containsBlock(blockId)) {
+      manager.getFile(blockId.name).length
+    }
+    else if (diskManager.containsBlock(blockId)) {
+      diskManager.getFile(blockId).length()
+    }
+    else 0L
   }
 
   /**
