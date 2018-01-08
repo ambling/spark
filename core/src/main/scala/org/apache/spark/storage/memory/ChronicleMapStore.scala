@@ -77,12 +77,20 @@ private[spark] class ChronicleMapStore(
     // this method will always return a Right(Long) because we handle the case in map creation.
     // since we need to check the size, the iterator is firstly changed to a Seq.
     val seq = values.toSeq
-    if (blocks.contains(blockId)) blocks(blockId).close() // close old before create new map
-    val map = createChronicleMap(blockId, onDisk, seq, classTag)
-      .asInstanceOf[ChronicleMap[Any, Any]]
-    blocks.put(blockId, map)
-    val size = getMapSize(blockId)
-    Right(size)
+
+    try {
+      if (blocks.contains(blockId)) blocks(blockId).close() // close old before create new map
+      val map = createChronicleMap(blockId, onDisk, seq, classTag)
+        .asInstanceOf[ChronicleMap[Any, Any]]
+      blocks.put(blockId, map)
+      val size = getMapSize(blockId)
+      Right(size)
+    } catch {
+      case e: IOException =>
+        logError(s"fail to persist block ${blockId.name} in chronicle map, due to: ${e.getMessage}")
+        Left(values)
+    }
+
 
   }
 
@@ -96,37 +104,44 @@ private[spark] class ChronicleMapStore(
     if (file.exists()) file.delete()
 
     val diskFile = diskManager.getFile(blockId)
+    diskFile.mkdirs()
     if (diskFile.exists()) diskFile.delete()
 
     val clazz = classTag.runtimeClass.asInstanceOf[Class[T]]
     val builder = ChronicleMap
       .of(classOf[IntValue], clazz)
-      .entries(values.size)
 
-    if (classOf[Marshallable].isAssignableFrom(clazz)) {
-      val instance = values.head.asInstanceOf[Marshallable]
-      val comparator = instance.getSizeComparator
-      val sorted = values.asInstanceOf[Seq[Marshallable]]
-        .sorted(Ordering.comparatorToOrdering(comparator).reverse)
-      builder.averageValue(sorted.head.asInstanceOf[T])
-      if (instance.getSizedReader != null) {
-        val reader = instance.getSizedReader.asInstanceOf[SizedReader[T]]
-        val writer = instance.getSizedWriter.asInstanceOf[SizedWriter[T]]
-        builder.valueMarshallers(reader, writer)
-      } else {
-        val reader = instance.getBytesReader.asInstanceOf[BytesReader[T]]
-        val writer = instance.getBytesWriter.asInstanceOf[BytesWriter[T]]
-        builder.valueMarshallers(reader, writer)
-      }
-      if (instance.getSizeMarshaller != null) {
-        builder.valueSizeMarshaller(instance.getSizeMarshaller)
-      }
+    if (values.isEmpty) {
+      // for empty map
+      builder.entries(1).averageValueSize(1)
     } else {
-      val serializer = serializerManager.getSerializer(classTag, autoPick = true).newInstance()
-      val marshaller = new SerializerMarshaller[T](serializer)(classTag)
-      builder
-        .averageValue(values.head)
-        .valueMarshaller(marshaller)
+      builder.entries((values.size*1.2).toLong)
+
+      if (classOf[Marshallable].isAssignableFrom(clazz)) {
+        val instance = values.head.asInstanceOf[Marshallable]
+        val comparator = instance.getSizeComparator
+        val sorted = values.asInstanceOf[Seq[Marshallable]]
+          .sorted(Ordering.comparatorToOrdering(comparator).reverse)
+        builder.averageValue(sorted.head.asInstanceOf[T])
+        if (instance.getSizedReader != null) {
+          val reader = instance.getSizedReader.asInstanceOf[SizedReader[T]]
+          val writer = instance.getSizedWriter.asInstanceOf[SizedWriter[T]]
+          builder.valueMarshallers(reader, writer)
+        } else {
+          val reader = instance.getBytesReader.asInstanceOf[BytesReader[T]]
+          val writer = instance.getBytesWriter.asInstanceOf[BytesWriter[T]]
+          builder.valueMarshallers(reader, writer)
+        }
+        if (instance.getSizeMarshaller != null) {
+          builder.valueSizeMarshaller(instance.getSizeMarshaller)
+        }
+      } else {
+        val serializer = serializerManager.getSerializer(classTag, autoPick = true).newInstance()
+        val marshaller = new SerializerMarshaller[T](serializer)(classTag)
+        builder
+          .averageValue(values.head)
+          .valueMarshaller(marshaller)
+      }
     }
 
     val map = if (onDisk) builder.createPersistedTo(diskFile) else {
@@ -137,7 +152,6 @@ private[spark] class ChronicleMapStore(
           builder.createPersistedTo(diskFile)
       }
     }
-
 
     val k = Values.newHeapInstance(classOf[IntValue])
     k.setValue(0)

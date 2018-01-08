@@ -71,7 +71,7 @@ private[spark] class ChronicleMapManager(
 
   private def addShutdownHook(): AnyRef = {
     logDebug("Adding shutdown hook") // force eager creation of logger
-    ShutdownHookManager.addShutdownHook(ShutdownHookManager.TEMP_DIR_SHUTDOWN_PRIORITY + 1) { () =>
+    ShutdownHookManager.addShutdownHook(ShutdownHookManager.TEMP_DIR_SHUTDOWN_PRIORITY + 2) { () =>
       logInfo("Shutdown hook called")
       ChronicleMapManager.this.doStop()
     }

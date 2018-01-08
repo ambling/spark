@@ -1409,6 +1409,10 @@ private[spark] class BlockManager(
     indexManager.getIndex(blockId, name)
   }
 
+  def dropBlockIndex(blockId: BlockId, name: String): Unit = {
+    indexManager.removeIndex(blockId, name)
+  }
+
   def getKVIndexPath(blockId: BlockId, name: String): (String, String) = {
     chronicleMapStore.getKVIndexPath(blockId, name)
   }
@@ -1485,6 +1489,7 @@ private[spark] class BlockManager(
       shuffleClient.close()
     }
     diskBlockManager.stop()
+    chronicleMapManager.stop()
     rpcEnv.stop(slaveEndpoint)
     blockInfoManager.clear()
     memoryStore.clear()
